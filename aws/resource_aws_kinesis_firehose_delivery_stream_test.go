@@ -1244,7 +1244,10 @@ resource "aws_kinesis_firehose_delivery_stream" "test_stream" {
   }
 }`
 
-var testAccKinesisFirehoseDeliveryStreamBaseElasticsearchConfig = testAccKinesisFirehoseDeliveryStreamBaseConfig + `
+var testAccKinesisFirehoseDeliveryStreamBaseElasticsearchConfig = `
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
+
 resource "aws_elasticsearch_domain" "test_cluster" {
   domain_name = "es-test-%d"
   cluster_config {
@@ -1261,16 +1264,89 @@ resource "aws_elasticsearch_domain" "test_cluster" {
         "AWS": "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
       },
       "Action": "es:*",
-      "Resource": "arn:aws:es:us-east-1:${data.aws_caller_identity.current.account_id}:domain/es-test-%d/*"
+      "Resource": "arn:aws:es:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:domain/es-test-%d/*"
     }
   ]
 }
 CONFIG
-}`
+}
+
+resource "aws_s3_bucket" "bucket" {
+  bucket = "tf-test-bucket-%d"
+  acl = "private"
+}
+
+resource "aws_iam_role" "firehose" {
+  name = "tf_acctest_firehose_delivery_role_%d"
+  assume_role_policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "firehose.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "StringEquals": {
+          "sts:ExternalId": "${data.aws_caller_identity.current.account_id}"
+        }
+      }
+    }
+  ]
+}
+EOF
+}
+
+resource "aws_iam_role_policy" "firehose" {
+  name = "tf_acctest_firehose_delivery_policy_%d"
+  role = "${aws_iam_role.firehose.id}"
+  policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "",
+      "Effect": "Allow",
+      "Action": [
+        "s3:AbortMultipartUpload",
+        "s3:GetBucketLocation",
+        "s3:GetObject",
+        "s3:ListBucket",
+        "s3:ListBucketMultipartUploads",
+        "s3:PutObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::${aws_s3_bucket.bucket.id}",
+        "arn:aws:s3:::${aws_s3_bucket.bucket.id}/*"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "es:DescribeElasticsearchDomain",
+        "es:DescribeElasticsearchDomains",
+        "es:DescribeElasticsearchDomainConfig",
+        "es:ESHttpGet",
+        "es:ESHttpPost",
+        "es:ESHttpPut"
+      ],
+      "Resource": [
+        "${aws_elasticsearch_domain.test_cluster.arn}",
+        "${aws_elasticsearch_domain.test_cluster.arn}/*"
+      ]
+    },
+  ]
+}
+EOF
+}
+`
 
 var testAccKinesisFirehoseDeliveryStreamConfig_ElasticsearchBasic = testAccKinesisFirehoseDeliveryStreamBaseElasticsearchConfig + `
 resource "aws_kinesis_firehose_delivery_stream" "test_stream_es" {
-  depends_on = ["aws_iam_role_policy.firehose", "aws_elasticsearch_domain.test_cluster"]
+  depends_on = ["aws_iam_role_policy.firehose"]
   name = "terraform-kinesis-firehose-es-%d"
   destination = "elasticsearch"
   s3_configuration {
@@ -1287,7 +1363,7 @@ resource "aws_kinesis_firehose_delivery_stream" "test_stream_es" {
 
 var testAccKinesisFirehoseDeliveryStreamConfig_ElasticsearchUpdate = testAccKinesisFirehoseDeliveryStreamBaseElasticsearchConfig + `
 resource "aws_kinesis_firehose_delivery_stream" "test_stream_es" {
-  depends_on = ["aws_iam_role_policy.firehose", "aws_elasticsearch_domain.test_cluster"]
+  depends_on = ["aws_iam_role_policy.firehose"]
   name = "terraform-kinesis-firehose-es-%d"
   destination = "elasticsearch"
   s3_configuration {
